@@ -51,10 +51,14 @@ if ( ! class_exists( 'SMMPW_Customer_Keys' ) ) {
             add_filter( 'woocommerce_get_query_vars', array( $this, 'register_query_var' ) );
             add_filter( 'woocommerce_account_menu_items', array( $this, 'register_menu_item' ), PHP_INT_MAX );
             add_action( 'woocommerce_account_' . self::ENDPOINT . '_endpoint', array( $this, 'render_endpoint' ) );
+            add_action( 'woocommerce_account_dashboard', array( $this, 'render_dashboard_shortcut' ), 1 );
             add_action( 'woocommerce_account_dashboard', array( $this, 'render_dashboard_panel' ) );
             add_shortcode( 'smmpw_customer_api_credentials', array( $this, 'render_shortcode' ) );
             add_action( 'admin_post_smmpw_generate_user_key', array( $this, 'handle_generate_key' ) );
             add_action( 'admin_post_nopriv_smmpw_generate_user_key', array( $this, 'handle_generate_key' ) );
+            add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_assets' ) );
+            add_action( 'user_register', array( $this, 'ensure_key_for_new_user' ) );
+            add_action( 'woocommerce_created_customer', array( $this, 'ensure_key_for_new_user' ) );
         }
 
         /**
@@ -116,7 +120,7 @@ if ( ! class_exists( 'SMMPW_Customer_Keys' ) ) {
             }
 
             $user_id = get_current_user_id();
-            $api_key = $this->get_user_key( $user_id );
+            $api_key = $this->maybe_generate_user_key( $user_id );
             $api_url = $this->get_api_url();
 
             if ( function_exists( 'wc_print_notices' ) ) {
@@ -143,7 +147,7 @@ if ( ! class_exists( 'SMMPW_Customer_Keys' ) ) {
             }
 
             $user_id      = get_current_user_id();
-            $api_key      = $this->get_user_key( $user_id );
+            $api_key      = $this->maybe_generate_user_key( $user_id );
             $api_url      = $this->get_api_url();
             $endpoint_url = function_exists( 'wc_get_account_endpoint_url' ) ? wc_get_account_endpoint_url( self::ENDPOINT ) : add_query_arg( self::ENDPOINT, '', home_url( '/' ) );
 
@@ -171,7 +175,7 @@ if ( ! class_exists( 'SMMPW_Customer_Keys' ) ) {
             }
 
             $user_id = get_current_user_id();
-            $api_key = $this->get_user_key( $user_id );
+            $api_key = $this->maybe_generate_user_key( $user_id );
             $api_url = $this->get_api_url();
 
             ob_start();
@@ -203,7 +207,7 @@ if ( ! class_exists( 'SMMPW_Customer_Keys' ) ) {
             check_admin_referer( 'smmpw_generate_user_key' );
 
             $user_id = get_current_user_id();
-            $new_key = strtolower( wp_generate_password( 40, false, false ) );
+            $new_key = $this->create_random_key();
 
             update_user_meta( $user_id, self::USER_META_KEY, $new_key );
 
@@ -237,6 +241,22 @@ if ( ! class_exists( 'SMMPW_Customer_Keys' ) ) {
          */
         private function get_api_url() {
             return add_query_arg( 'smmpw-api', '1', home_url( '/' ) );
+        }
+
+        /**
+         * Ensure front-end assets are loaded when needed.
+         */
+        public function enqueue_assets() {
+            if ( ! function_exists( 'is_account_page' ) || ! is_account_page() ) {
+                return;
+            }
+
+            wp_enqueue_style(
+                'smmpw-customer-keys',
+                SMMPW_PLUGIN_URL . 'assets/css/customer-keys.css',
+                array(),
+                class_exists( 'SMMPW_Plugin' ) ? SMMPW_Plugin::VERSION : '1.0.0'
+            );
         }
 
         /**
@@ -309,6 +329,75 @@ if ( ! class_exists( 'SMMPW_Customer_Keys' ) ) {
                 <?php endif; ?>
             </section>
             <?php
+        }
+
+        /**
+         * Render a shortcut tile on the WooCommerce account dashboard.
+         */
+        public function render_dashboard_shortcut() {
+            if ( ! is_user_logged_in() ) {
+                return;
+            }
+
+            $user_id      = get_current_user_id();
+            $api_key      = $this->maybe_generate_user_key( $user_id );
+            $api_url      = $this->get_api_url();
+            $endpoint_url = function_exists( 'wc_get_account_endpoint_url' ) ? wc_get_account_endpoint_url( self::ENDPOINT ) : add_query_arg( self::ENDPOINT, '', home_url( '/' ) );
+
+            ?>
+            <div class="smmpw-dashboard-shortcut">
+                <a class="smmpw-dashboard-shortcut__card" href="<?php echo esc_url( $endpoint_url ); ?>">
+                    <span class="smmpw-dashboard-shortcut__title"><?php esc_html_e( 'API Anahtarı', 'smmpw' ); ?></span>
+                    <span class="smmpw-dashboard-shortcut__meta-label"><?php esc_html_e( 'API URL', 'smmpw' ); ?></span>
+                    <code class="smmpw-dashboard-shortcut__meta-value"><?php echo esc_html( $api_url ); ?></code>
+                    <span class="smmpw-dashboard-shortcut__meta-label"><?php esc_html_e( 'API Key', 'smmpw' ); ?></span>
+                    <code class="smmpw-dashboard-shortcut__meta-value"><?php echo esc_html( $api_key ); ?></code>
+                    <span class="smmpw-dashboard-shortcut__cta"><?php esc_html_e( 'Detayları Gör', 'smmpw' ); ?></span>
+                </a>
+            </div>
+            <?php
+        }
+
+        /**
+         * Generate a key for new customers during registration.
+         *
+         * @param int $user_id User ID.
+         */
+        public function ensure_key_for_new_user( $user_id ) {
+            if ( empty( $user_id ) ) {
+                return;
+            }
+
+            $this->maybe_generate_user_key( $user_id );
+        }
+
+        /**
+         * Maybe generate an API key if the user does not have one yet.
+         *
+         * @param int $user_id User ID.
+         *
+         * @return string
+         */
+        private function maybe_generate_user_key( $user_id ) {
+            $key = $this->get_user_key( $user_id );
+
+            if ( ! empty( $key ) ) {
+                return $key;
+            }
+
+            $key = $this->create_random_key();
+            update_user_meta( $user_id, self::USER_META_KEY, $key );
+
+            return $key;
+        }
+
+        /**
+         * Generate a new random API key.
+         *
+         * @return string
+         */
+        private function create_random_key() {
+            return strtolower( wp_generate_password( 40, false, false ) );
         }
     }
 }
