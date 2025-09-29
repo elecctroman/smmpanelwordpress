@@ -49,8 +49,10 @@ if ( ! class_exists( 'SMMPW_Customer_Keys' ) ) {
         private function __construct() {
             add_action( 'init', array( $this, 'register_endpoint' ) );
             add_filter( 'woocommerce_get_query_vars', array( $this, 'register_query_var' ) );
-            add_filter( 'woocommerce_account_menu_items', array( $this, 'register_menu_item' ), 99 );
+            add_filter( 'woocommerce_account_menu_items', array( $this, 'register_menu_item' ), PHP_INT_MAX );
             add_action( 'woocommerce_account_' . self::ENDPOINT . '_endpoint', array( $this, 'render_endpoint' ) );
+            add_action( 'woocommerce_account_dashboard', array( $this, 'render_dashboard_panel' ) );
+            add_shortcode( 'smmpw_customer_api_credentials', array( $this, 'render_shortcode' ) );
             add_action( 'admin_post_smmpw_generate_user_key', array( $this, 'handle_generate_key' ) );
             add_action( 'admin_post_nopriv_smmpw_generate_user_key', array( $this, 'handle_generate_key' ) );
         }
@@ -85,6 +87,10 @@ if ( ! class_exists( 'SMMPW_Customer_Keys' ) ) {
         public function register_menu_item( $items ) {
             $label = __( 'API Anahtarı', 'smmpw' );
 
+            if ( isset( $items[ self::ENDPOINT ] ) ) {
+                return $items;
+            }
+
             if ( isset( $items['customer-logout'] ) ) {
                 $logout = $items['customer-logout'];
                 unset( $items['customer-logout'] );
@@ -111,42 +117,77 @@ if ( ! class_exists( 'SMMPW_Customer_Keys' ) ) {
 
             $user_id = get_current_user_id();
             $api_key = $this->get_user_key( $user_id );
-            $api_url = add_query_arg( 'smmpw-api', '1', home_url( '/' ) );
+            $api_url = $this->get_api_url();
 
             if ( function_exists( 'wc_print_notices' ) ) {
                 wc_print_notices();
             }
-            ?>
-            <h3><?php esc_html_e( 'API Bilgileri', 'smmpw' ); ?></h3>
-            <p><?php esc_html_e( 'Bu bilgilerle Perfect Panel ve diğer paneller üzerinden sipariş oluşturabilirsiniz.', 'smmpw' ); ?></p>
+            $this->render_credentials_section(
+                $api_key,
+                $api_url,
+                array(
+                    'include_heading'     => true,
+                    'show_description'    => true,
+                    'show_generate_form'  => true,
+                    'show_view_link'      => false,
+                )
+            );
+        }
 
-            <table class="shop_table shop_table_responsive">
-                <tbody>
-                    <tr>
-                        <th><?php esc_html_e( 'API URL', 'smmpw' ); ?></th>
-                        <td><code><?php echo esc_html( $api_url ); ?></code></td>
-                    </tr>
-                    <tr>
-                        <th><?php esc_html_e( 'API Key', 'smmpw' ); ?></th>
-                        <td>
-                            <?php if ( $api_key ) : ?>
-                                <code><?php echo esc_html( $api_key ); ?></code>
-                            <?php else : ?>
-                                <em><?php esc_html_e( 'Henüz bir API anahtarınız yok.', 'smmpw' ); ?></em>
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
+        /**
+         * Show a quick access panel on the default account dashboard.
+         */
+        public function render_dashboard_panel() {
+            if ( ! is_user_logged_in() ) {
+                return;
+            }
 
-            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-                <?php wp_nonce_field( 'smmpw_generate_user_key' ); ?>
-                <input type="hidden" name="action" value="smmpw_generate_user_key" />
-                <button type="submit" class="button button-primary">
-                    <?php echo $api_key ? esc_html__( 'API Anahtarını Yenile', 'smmpw' ) : esc_html__( 'API Anahtarı Oluştur', 'smmpw' ); ?>
-                </button>
-            </form>
-            <?php
+            $user_id      = get_current_user_id();
+            $api_key      = $this->get_user_key( $user_id );
+            $api_url      = $this->get_api_url();
+            $endpoint_url = function_exists( 'wc_get_account_endpoint_url' ) ? wc_get_account_endpoint_url( self::ENDPOINT ) : add_query_arg( self::ENDPOINT, '', home_url( '/' ) );
+
+            $this->render_credentials_section(
+                $api_key,
+                $api_url,
+                array(
+                    'include_heading'     => true,
+                    'show_description'    => false,
+                    'show_generate_form'  => false,
+                    'show_view_link'      => $endpoint_url,
+                    'extra_classes'       => 'smmpw-dashboard-credentials',
+                )
+            );
+        }
+
+        /**
+         * Render the credentials via shortcode output.
+         *
+         * @return string
+         */
+        public function render_shortcode() {
+            if ( ! is_user_logged_in() ) {
+                return '';
+            }
+
+            $user_id = get_current_user_id();
+            $api_key = $this->get_user_key( $user_id );
+            $api_url = $this->get_api_url();
+
+            ob_start();
+            $this->render_credentials_section(
+                $api_key,
+                $api_url,
+                array(
+                    'include_heading'     => true,
+                    'show_description'    => true,
+                    'show_generate_form'  => true,
+                    'show_view_link'      => false,
+                    'extra_classes'       => 'smmpw-shortcode-credentials',
+                )
+            );
+
+            return ob_get_clean();
         }
 
         /**
@@ -187,6 +228,87 @@ if ( ! class_exists( 'SMMPW_Customer_Keys' ) ) {
             $key = get_user_meta( $user_id, self::USER_META_KEY, true );
 
             return is_string( $key ) ? $key : '';
+        }
+
+        /**
+         * Retrieve the base API URL for customer usage.
+         *
+         * @return string
+         */
+        private function get_api_url() {
+            return add_query_arg( 'smmpw-api', '1', home_url( '/' ) );
+        }
+
+        /**
+         * Shared renderer for the credentials table.
+         *
+         * @param string $api_key API key value.
+         * @param string $api_url API URL value.
+         * @param array  $args    Rendering options.
+         */
+        private function render_credentials_section( $api_key, $api_url, $args ) {
+            $defaults = array(
+                'include_heading'    => true,
+                'show_description'   => false,
+                'show_generate_form' => false,
+                'show_view_link'     => false,
+                'extra_classes'      => '',
+            );
+
+            $args = wp_parse_args( $args, $defaults );
+
+            $classes = array( 'smmpw-api-credentials' );
+
+            if ( ! empty( $args['extra_classes'] ) ) {
+                $classes[] = $args['extra_classes'];
+            }
+
+            ?>
+            <section class="<?php echo esc_attr( implode( ' ', $classes ) ); ?>">
+                <?php if ( $args['include_heading'] ) : ?>
+                    <h3><?php esc_html_e( 'API Bilgileri', 'smmpw' ); ?></h3>
+                <?php endif; ?>
+
+                <?php if ( $args['show_description'] ) : ?>
+                    <p><?php esc_html_e( 'Bu bilgilerle Perfect Panel ve diğer paneller üzerinden sipariş oluşturabilirsiniz.', 'smmpw' ); ?></p>
+                <?php endif; ?>
+
+                <table class="shop_table shop_table_responsive">
+                    <tbody>
+                        <tr>
+                            <th><?php esc_html_e( 'API URL', 'smmpw' ); ?></th>
+                            <td><code><?php echo esc_html( $api_url ); ?></code></td>
+                        </tr>
+                        <tr>
+                            <th><?php esc_html_e( 'API Key', 'smmpw' ); ?></th>
+                            <td>
+                                <?php if ( $api_key ) : ?>
+                                    <code><?php echo esc_html( $api_key ); ?></code>
+                                <?php else : ?>
+                                    <em><?php esc_html_e( 'Henüz bir API anahtarınız yok.', 'smmpw' ); ?></em>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <?php if ( $args['show_generate_form'] ) : ?>
+                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                        <?php wp_nonce_field( 'smmpw_generate_user_key' ); ?>
+                        <input type="hidden" name="action" value="smmpw_generate_user_key" />
+                        <button type="submit" class="button button-primary">
+                            <?php echo $api_key ? esc_html__( 'API Anahtarını Yenile', 'smmpw' ) : esc_html__( 'API Anahtarı Oluştur', 'smmpw' ); ?>
+                        </button>
+                    </form>
+                <?php elseif ( ! empty( $args['show_view_link'] ) ) : ?>
+                    <p>
+                        <a class="button" href="<?php echo esc_url( $args['show_view_link'] ); ?>">
+                            <?php esc_html_e( 'Detayları Görüntüle', 'smmpw' ); ?>
+                        </a>
+                    </p>
+                <?php endif; ?>
+            </section>
+            <?php
         }
     }
 }
